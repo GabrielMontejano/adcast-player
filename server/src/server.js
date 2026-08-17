@@ -341,10 +341,27 @@ function stateClass(state) {
   return "neutral";
 }
 
-function html(state, requestedView = "dashboard") {
+function safeDeviceId(deviceId) {
+  return typeof deviceId === "string"
+    && deviceId.length >= 3
+    && deviceId.length <= 60
+    && /^[A-Za-z0-9_-]+$/.test(deviceId);
+}
+
+function manifestsByDevice(state) {
+  return state.manifests && typeof state.manifests === "object" ? state.manifests : {};
+}
+
+function manifestForDevice(state, deviceId) {
+  return manifestsByDevice(state)[deviceId] || null;
+}
+
+function html(state, query = {}) {
   const views = new Set(["dashboard", "devices", "publish", "server", "events"]);
+  const requestedView = typeof query === "string" ? query : query.view;
   const activeView = views.has(requestedView) ? requestedView : "dashboard";
-  const manifest = state.manifest;
+  const selectedDeviceId = safeDeviceId(query.device_id) ? query.device_id : "";
+  const manifests = manifestsByDevice(state);
   const devices = Object.values(state.devices || {})
     .sort((a, b) => new Date(b.last_contact || 0) - new Date(a.last_contact || 0));
   const latestDevice = devices[0] || {};
@@ -355,18 +372,48 @@ function html(state, requestedView = "dashboard") {
   const updatingCount = devices.filter(device => !["IDLE", "SUCCESS", "FAILED", undefined, null].includes(device.update_state)).length;
   const errorCount = devices.filter(device => device.last_error || device.update_state === "FAILED").length;
   const offlineCount = Math.max(devices.length - onlineCount, 0);
-  const nextVersion = manifest ? manifest.version + 1 : 1;
+  const selectedManifest = selectedDeviceId ? manifestForDevice(state, selectedDeviceId) : null;
+  const nextVersion = selectedManifest ? selectedManifest.version + 1 : 1;
   const latestHealthText = lastHealth
     ? `${formatDate(lastHealth.time)} | playback=${lastHealth.playback ? "sim" : "nao"} | posicao=${lastHealth.position_ms || 0} ms | estado=${escapeHtml(friendlyUpdateState(lastHealth.update_state))}`
     : "nenhuma";
   const currentUpdateLabel = friendlyUpdateState(latestDevice.update_state);
+  const filteredEvents = selectedDeviceId
+    ? (state.events || []).filter(event => event.device_id === selectedDeviceId)
+    : (state.events || []);
+  const deviceCard = device => {
+    const online = isDeviceOnline(device);
+    const deviceId = device.device_id || "unknown";
+    const deviceManifest = manifestForDevice(state, deviceId);
+    return `<article class="device-card">
+      <div class="device-card-head">
+        <h3>${escapeHtml(deviceId)}</h3>
+        <span class="pill ${online ? "good" : "danger"}">${online ? "ONLINE" : "OFFLINE"}</span>
+      </div>
+      <dl>
+        <dt>Versao instalada</dt><dd>${escapeHtml(device.version ?? "0")}</dd>
+        <dt>Video destinado</dt><dd>${deviceManifest ? `versao ${escapeHtml(deviceManifest.version)} - ${formatBytes(deviceManifest.size)}` : "nenhum"}</dd>
+        <dt>Playback</dt><dd>${device.playback ? "RODANDO" : "nao confirmado"}</dd>
+        <dt>Posicao</dt><dd>${escapeHtml(device.position_ms ?? 0)} ms</dd>
+        <dt>Estado</dt><dd><span class="state-badge ${stateClass(device.update_state)}">${escapeHtml(friendlyUpdateState(device.update_state))}</span></dd>
+        <dt>Ultimo contato</dt><dd>${formatDate(device.last_contact)}</dd>
+        <dt>Ultimo erro</dt><dd>${escapeHtml(device.last_error || "nenhum")}</dd>
+      </dl>
+      <div class="card-actions">
+        <a class="text-link" href="/?view=devices&device_id=${encodeURIComponent(deviceId)}">Ver detalhes</a>
+        <a class="text-link" href="/?view=publish&device_id=${encodeURIComponent(deviceId)}">Publicar video</a>
+      </div>
+    </article>`;
+  };
   const deviceRows = devices.length
     ? devices.map(device => {
       const online = isDeviceOnline(device);
+      const deviceManifest = manifestForDevice(state, device.device_id || "");
       return `<tr>
         <td><strong>${escapeHtml(device.device_id || "unknown")}</strong></td>
         <td><span class="pill ${online ? "good" : "danger"}">${online ? "ONLINE" : "OFFLINE"}</span></td>
         <td>${escapeHtml(device.version ?? "0")}</td>
+        <td>${deviceManifest ? escapeHtml(deviceManifest.version) : "nenhum"}</td>
         <td>${device.playback ? "RODANDO" : "nao confirmado"}</td>
         <td>${escapeHtml(device.position_ms ?? 0)} ms</td>
         <td><span class="state-badge ${stateClass(device.update_state)}">${escapeHtml(friendlyUpdateState(device.update_state))}</span><small>${escapeHtml(device.update_state || "")}</small></td>
@@ -374,7 +421,10 @@ function html(state, requestedView = "dashboard") {
         <td>${escapeHtml(device.last_error || "nenhum")}</td>
       </tr>`;
     }).join("")
-    : `<tr><td colspan="8" class="empty">Nenhuma TV conectou ainda.</td></tr>`;
+    : `<tr><td colspan="9" class="empty">Nenhuma TV conectou ainda.</td></tr>`;
+  const deviceCards = devices.length
+    ? devices.map(deviceCard).join("")
+    : `<div class="empty">Nenhuma TV conectou ainda.</div>`;
   const eventRow = e => `<tr>
       <td>${formatDate(e.time)}</td>
       <td>${escapeHtml(e.device_id || "")}</td>
@@ -383,20 +433,41 @@ function html(state, requestedView = "dashboard") {
       <td>${escapeHtml(e.version ?? "")}</td>
       <td>${escapeHtml(e.last_error || "")}</td>
     </tr>`;
-  const eventRows = (state.events || []).length
-    ? state.events.map(eventRow).join("")
-    : `<tr><td colspan="6" class="empty">Nenhum evento registrado ainda.</td></tr>`;
-  const dashboardEventRows = (state.events || []).length
-    ? state.events.slice(0, 8).map(eventRow).join("")
+  const eventRows = filteredEvents.length
+    ? filteredEvents.map(eventRow).join("")
     : `<tr><td colspan="6" class="empty">Nenhum evento registrado ainda.</td></tr>`;
   const navItem = (view, label) => `<a class="${activeView === view ? "active" : ""}" href="/?view=${view}">${label}</a>`;
   const pageMeta = {
     dashboard: ["Dashboard", "Status atual dos displays instalados."],
     devices: ["TVs", "Controle individual dos players instalados."],
-    publish: ["Publicar video", "Envie uma nova campanha MP4 para as TVs."],
-    server: ["Servidor", "Configuracoes operacionais e manifest publicado."],
+    publish: ["Publicar video", "Envie uma nova campanha MP4 para uma TV especifica."],
+    server: ["Servidor", "Configuracoes operacionais e videos publicados."],
     events: ["Eventos", "Historico recente recebido dos dispositivos."]
   };
+  const selectedDevice = selectedDeviceId ? (state.devices || {})[selectedDeviceId] : null;
+  const selectedDeviceEvents = selectedDeviceId
+    ? (state.events || []).filter(event => event.device_id === selectedDeviceId).slice(0, 20)
+    : [];
+  const selectedDeviceEventRows = selectedDeviceEvents.length
+    ? selectedDeviceEvents.map(eventRow).join("")
+    : `<tr><td colspan="6" class="empty">${selectedDeviceId ? "Nenhum evento para esta TV ainda." : "Selecione uma TV para ver o historico dela."}</td></tr>`;
+  const deviceDatalist = devices.map(device => `<option value="${escapeHtml(device.device_id || "")}"></option>`).join("");
+  const nextVersionByDevice = Object.fromEntries(devices.map(device => {
+    const deviceId = device.device_id || "";
+    const item = manifestForDevice(state, deviceId);
+    return [deviceId, item ? item.version + 1 : Math.max(Number(device.version || 0) + 1, 1)];
+  }));
+  const manifestRows = Object.keys(manifests).length
+    ? Object.entries(manifests)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([deviceId, item]) => `<tr>
+        <td><strong>${escapeHtml(deviceId)}</strong></td>
+        <td>${escapeHtml(item.version)}</td>
+        <td>${escapeHtml(item.original_filename || item.filename || "video.mp4")}</td>
+        <td>${formatBytes(item.size)}</td>
+        <td>${formatDate(item.published_at)}</td>
+      </tr>`).join("")
+    : `<tr><td colspan="5" class="empty">Nenhum video publicado por TV ainda.</td></tr>`;
   const dashboardContent = `
     <section>
       <div class="grid">
@@ -425,7 +496,7 @@ function html(state, requestedView = "dashboard") {
             <dt>Pedido atual</dt><dd>${pendingCommand ? `aguardando resposta (${escapeHtml(pendingCommand.id)})` : "nenhum"}</dd>
             <dt>Ultima verificacao</dt><dd>${latestHealthText}</dd>
             <dt>Erros ativos</dt><dd>${errorCount}</dd>
-            <dt>Video publicado</dt><dd>${manifest ? `versao ${escapeHtml(manifest.version)} - ${formatBytes(manifest.size)}` : "nenhum"}</dd>
+            <dt>Video destinado</dt><dd>${latestDevice.device_id && manifestForDevice(state, latestDevice.device_id) ? `versao ${escapeHtml(manifestForDevice(state, latestDevice.device_id).version)} - ${formatBytes(manifestForDevice(state, latestDevice.device_id).size)}` : "nenhum"}</dd>
           </dl>
         </div>
       </div>
@@ -446,23 +517,62 @@ function html(state, requestedView = "dashboard") {
     </section>
     <section>
       <div class="section-title-row">
-        <h3>Eventos recentes</h3>
-        <a class="text-link" href="/?view=events">Ver historico completo</a>
+        <h3>TVs instaladas</h3>
+        <a class="text-link" href="/?view=devices">Gerenciar TVs</a>
       </div>
-      <div class="table-wrap">
-        <table>
-          <tr><th>Hora</th><th>Dispositivo</th><th>Estado</th><th>Evento</th><th>Versao</th><th>Erro</th></tr>
-          ${dashboardEventRows}
-        </table>
+      <div class="device-grid">
+        ${deviceCards}
       </div>
     </section>`;
   const devicesContent = `
     <section>
-      <h3>TVs instaladas</h3>
+      <div class="section-title-row">
+        <h3>TVs instaladas</h3>
+        ${selectedDeviceId ? `<a class="text-link" href="/?view=devices">Limpar selecao</a>` : ""}
+      </div>
       <div class="table-wrap">
         <table>
-          <tr><th>Dispositivo</th><th>Status</th><th>Versao</th><th>Playback</th><th>Posicao</th><th>Update</th><th>Ultimo contato</th><th>Erro</th></tr>
+          <tr><th>Dispositivo</th><th>Status</th><th>Instalada</th><th>Destinada</th><th>Playback</th><th>Posicao</th><th>Update</th><th>Ultimo contato</th><th>Erro</th></tr>
           ${deviceRows}
+        </table>
+      </div>
+    </section>
+    <section>
+      <h3>${selectedDeviceId ? `Detalhes: ${escapeHtml(selectedDeviceId)}` : "Detalhe da TV"}</h3>
+      ${selectedDeviceId ? `
+        <div class="split">
+          <div>
+            <dl>
+              <dt>Dispositivo</dt><dd>${escapeHtml(selectedDeviceId)}</dd>
+              <dt>Status</dt><dd><span class="pill ${selectedDevice && isDeviceOnline(selectedDevice) ? "good" : "danger"}">${selectedDevice && isDeviceOnline(selectedDevice) ? "ONLINE" : "OFFLINE"}</span></dd>
+              <dt>Versao instalada</dt><dd>${selectedDevice ? escapeHtml(selectedDevice.version ?? "0") : "desconhecida"}</dd>
+              <dt>Playback</dt><dd>${selectedDevice && selectedDevice.playback ? "RODANDO" : "nao confirmado"}</dd>
+              <dt>Posicao</dt><dd>${selectedDevice ? escapeHtml(selectedDevice.position_ms ?? 0) : 0} ms</dd>
+              <dt>Estado</dt><dd><span class="state-badge ${stateClass(selectedDevice && selectedDevice.update_state)}">${escapeHtml(friendlyUpdateState(selectedDevice && selectedDevice.update_state))}</span></dd>
+              <dt>Ultimo contato</dt><dd>${selectedDevice ? formatDate(selectedDevice.last_contact) : "nenhum"}</dd>
+              <dt>Ultimo erro</dt><dd>${selectedDevice ? escapeHtml(selectedDevice.last_error || "nenhum") : "nenhum"}</dd>
+            </dl>
+          </div>
+          <div>
+            <dl>
+              <dt>Video destinado</dt><dd>${manifestForDevice(state, selectedDeviceId) ? `versao ${escapeHtml(manifestForDevice(state, selectedDeviceId).version)}` : "nenhum"}</dd>
+              <dt>Arquivo</dt><dd>${manifestForDevice(state, selectedDeviceId) ? escapeHtml(manifestForDevice(state, selectedDeviceId).original_filename || "video.mp4") : "nenhum"}</dd>
+              <dt>Tamanho</dt><dd>${manifestForDevice(state, selectedDeviceId) ? formatBytes(manifestForDevice(state, selectedDeviceId).size) : "nenhum"}</dd>
+              <dt>Publicado em</dt><dd>${manifestForDevice(state, selectedDeviceId) ? formatDate(manifestForDevice(state, selectedDeviceId).published_at) : "nenhum"}</dd>
+            </dl>
+            <div class="card-actions">
+              <a class="button-link" href="/?view=publish&device_id=${encodeURIComponent(selectedDeviceId)}">PUBLICAR PARA ESTA TV</a>
+              <a class="button-link secondary-link" href="/?view=events&device_id=${encodeURIComponent(selectedDeviceId)}">VER LOG COMPLETO</a>
+            </div>
+          </div>
+        </div>` : `<p class="empty">Clique em "Ver detalhes" em uma TV para acompanhar somente ela.</p>`}
+    </section>
+    <section>
+      <h3>Eventos da TV</h3>
+      <div class="table-wrap">
+        <table>
+          <tr><th>Hora</th><th>Dispositivo</th><th>Estado</th><th>Evento</th><th>Versao</th><th>Erro</th></tr>
+          ${selectedDeviceEventRows}
         </table>
       </div>
     </section>`;
@@ -470,6 +580,8 @@ function html(state, requestedView = "dashboard") {
     <section>
       <h3>Publicar video</h3>
       <form id="publish-form" action="/api/publish" method="post" enctype="multipart/form-data">
+        <label>TV de destino</label>
+        <input id="target-device" name="target_device_id" list="known-devices" value="${escapeHtml(selectedDeviceId)}" placeholder="ex: loterica_tv_propaganda" required>
         <label>Arquivo MP4</label>
         <input id="video-file" name="video" type="file" accept="video/mp4" required>
         <label>Versao</label>
@@ -492,16 +604,13 @@ function html(state, requestedView = "dashboard") {
       </form>
     </section>
     <section>
-      <h3>Manifest publicado</h3>
-      <dl>
-        <dt>Versao</dt><dd>${manifest ? escapeHtml(manifest.version) : "nenhuma"}</dd>
-        <dt>Arquivo</dt><dd>${manifest ? escapeHtml(manifest.filename) : "nenhum"}</dd>
-        <dt>Original</dt><dd>${manifest ? escapeHtml(manifest.original_filename || manifest.filename) : "nenhum"}</dd>
-        <dt>Tamanho</dt><dd>${manifest ? formatBytes(manifest.size) : "nenhum"}</dd>
-        <dt>SHA-256</dt><dd>${manifest ? escapeHtml(manifest.sha256) : "nenhum"}</dd>
-        <dt>URL</dt><dd>${manifest ? escapeHtml(manifest.download_url) : "nenhuma"}</dd>
-        <dt>Publicado em</dt><dd>${manifest ? formatDate(manifest.published_at) : "nenhum"}</dd>
-      </dl>
+      <h3>Videos publicados por TV</h3>
+      <div class="table-wrap">
+        <table>
+          <tr><th>TV</th><th>Versao</th><th>Arquivo</th><th>Tamanho</th><th>Publicado em</th></tr>
+          ${manifestRows}
+        </table>
+      </div>
     </section>`;
   const serverContent = `
     <section>
@@ -518,7 +627,18 @@ function html(state, requestedView = "dashboard") {
     </section>`;
   const eventsContent = `
     <section>
-      <h3>Eventos recentes</h3>
+      <div class="section-title-row">
+        <h3>Eventos recentes</h3>
+        ${selectedDeviceId ? `<a class="text-link" href="/?view=events">Mostrar todos</a>` : ""}
+      </div>
+      <form class="filter-row" method="get" action="/">
+        <input type="hidden" name="view" value="events">
+        <div>
+          <label>Filtrar por TV</label>
+          <input name="device_id" list="known-devices" value="${escapeHtml(selectedDeviceId)}" placeholder="ex: loterica_tv_propaganda">
+        </div>
+        <button type="submit">FILTRAR</button>
+      </form>
       <div class="table-wrap">
         <table>
           <tr><th>Hora</th><th>Dispositivo</th><th>Estado</th><th>Evento</th><th>Versao</th><th>Erro</th></tr>
@@ -573,7 +693,7 @@ function html(state, requestedView = "dashboard") {
     section h3 { font-size: 18px; margin: 0 0 14px; }
     label { display: block; font-weight: 700; margin: 12px 0 6px; }
     input, button { font: inherit; }
-    input[type="number"], input[type="file"] { width: 100%; padding: 11px; border: 1px solid #3b4654; border-radius: 8px; background: #11161c; color: var(--ink); }
+    input[type="number"], input[type="text"], input[list], input[type="file"] { width: 100%; padding: 11px; border: 1px solid #3b4654; border-radius: 8px; background: #11161c; color: var(--ink); }
     input[type="file"]::file-selector-button { margin-right: 10px; border: 0; border-radius: 6px; padding: 8px 10px; background: #2a3440; color: var(--ink); font-weight: 700; cursor: pointer; }
     button, .button-link { margin-top: 14px; padding: 10px 14px; border: 0; border-radius: 8px; background: var(--accent); color: white; font-weight: 800; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; min-height: 42px; }
     button:hover, .button-link:hover { filter: brightness(1.08); }
@@ -612,6 +732,15 @@ function html(state, requestedView = "dashboard") {
     .status-strip div { background: var(--panel-soft); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
     .status-strip span { display: block; color: var(--muted); font-size: 13px; font-weight: 700; margin-bottom: 6px; }
     .status-strip strong { font-size: 16px; }
+    .device-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 14px; }
+    .device-card { background: var(--panel-soft); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+    .device-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .device-card-head h3 { margin: 0; word-break: break-word; }
+    .card-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 14px; }
+    .secondary-link { background: #2a3440; color: #dbe6ee; }
+    .filter-row { display: flex; gap: 10px; align-items: flex-end; margin-bottom: 14px; }
+    .filter-row label { margin: 0 0 6px; }
+    .filter-row div { flex: 1; }
     .upload-panel { margin-top: 14px; border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: var(--panel-soft); }
     .upload-meta { display: flex; flex-direction: column; gap: 4px; color: var(--muted); }
     .upload-meta strong { color: var(--ink); }
@@ -657,6 +786,9 @@ function html(state, requestedView = "dashboard") {
       </div>
     </header>
     ${activeContent}
+    <datalist id="known-devices">
+      ${deviceDatalist}
+    </datalist>
   </main>
 </div>
 <script>
@@ -669,6 +801,8 @@ function html(state, requestedView = "dashboard") {
   const form = document.getElementById("publish-form");
   if (!form) return;
 
+  const nextVersionByDevice = ${JSON.stringify(nextVersionByDevice)};
+  const targetDeviceInput = document.getElementById("target-device");
   const fileInput = document.getElementById("video-file");
   const versionInput = document.getElementById("video-version");
   const publishButton = document.getElementById("publish-button");
@@ -689,6 +823,7 @@ function html(state, requestedView = "dashboard") {
   const setLocked = (locked) => {
     publishButton.disabled = locked;
     cancelButton.disabled = !locked;
+    targetDeviceInput.disabled = locked;
     fileInput.disabled = locked;
     versionInput.disabled = locked;
   };
@@ -703,6 +838,14 @@ function html(state, requestedView = "dashboard") {
     }
     return size.toFixed(unit === 0 ? 0 : 1) + " " + units[unit];
   };
+
+  targetDeviceInput.addEventListener("change", () => {
+    const target = targetDeviceInput.value.trim();
+    if (nextVersionByDevice[target]) {
+      versionInput.value = nextVersionByDevice[target];
+      addLog("Destino selecionado: " + target + ". Proxima versao sugerida: " + versionInput.value + ".");
+    }
+  });
 
   fileInput.addEventListener("change", () => {
     const file = fileInput.files && fileInput.files[0];
@@ -732,8 +875,16 @@ function html(state, requestedView = "dashboard") {
       addLog("Publicacao bloqueada: nenhum arquivo selecionado.");
       return;
     }
+    const targetDevice = targetDeviceInput.value.trim();
+    if (!/^[A-Za-z0-9_-]{3,60}$/.test(targetDevice)) {
+      title.textContent = "Informe a TV de destino";
+      detail.textContent = "Use somente letras, numeros, underline ou hifen.";
+      addLog("Publicacao bloqueada: TV de destino invalida.");
+      return;
+    }
 
     const data = new FormData();
+    data.append("target_device_id", targetDevice);
     data.append("video", file);
     data.append("version", versionInput.value);
 
@@ -743,7 +894,7 @@ function html(state, requestedView = "dashboard") {
     title.textContent = "Enviando video...";
     detail.textContent = "0% enviado de " + formatBytesClient(file.size);
     bar.style.width = "0%";
-    addLog("Envio iniciado para a versao " + versionInput.value + ".");
+    addLog("Envio iniciado para " + targetDevice + ", versao " + versionInput.value + ".");
 
     xhr.upload.onprogress = (e) => {
       if (!e.lengthComputable) {
@@ -822,14 +973,16 @@ app.get("/healthz", (req, res) => {
 });
 
 app.get("/", rateLimit("admin", ADMIN_RATE_LIMIT), requireAdmin, (req, res) => {
-  res.type("html").send(html(loadState(), req.query.view));
+  res.type("html").send(html(loadState(), req.query));
 });
 
 app.get("/manifest", rateLimit("device", DEVICE_RATE_LIMIT), requireDevice, (req, res) => {
   const state = loadState();
   const host = publicBaseUrl(req);
-  const manifest = state.manifest
-    ? { ...state.manifest, download_url: `${host}${withDeviceToken(`/download/${state.manifest.version}`)}` }
+  const deviceId = String(req.query.device_id || req.get("x-device-id") || "");
+  const deviceManifest = safeDeviceId(deviceId) ? manifestForDevice(state, deviceId) : null;
+  const manifest = deviceManifest
+    ? { ...deviceManifest, download_url: `${host}${withDeviceToken(`/download/${encodeURIComponent(deviceId)}/${deviceManifest.version}`)}` }
     : { version: 0 };
   if (state.command && !state.command.completed_at) {
     manifest.command = state.command;
@@ -837,9 +990,10 @@ app.get("/manifest", rateLimit("device", DEVICE_RATE_LIMIT), requireDevice, (req
   res.json(manifest);
 });
 
-app.get("/download/:version", rateLimit("device", DEVICE_RATE_LIMIT), requireDevice, (req, res) => {
+app.get("/download/:deviceId/:version", rateLimit("device", DEVICE_RATE_LIMIT), requireDevice, (req, res) => {
   const state = loadState();
-  const manifest = state.manifest;
+  const deviceId = req.params.deviceId;
+  const manifest = safeDeviceId(deviceId) ? manifestForDevice(state, deviceId) : null;
   if (!manifest || String(manifest.version) !== String(req.params.version)) {
     res.status(404).send("version not found");
     return;
@@ -911,11 +1065,12 @@ app.post("/api/publish", rateLimit("admin", ADMIN_RATE_LIMIT), requireAdmin, (re
     headers: req.headers,
     limits: {
       files: 1,
-      fields: 2,
+      fields: 3,
       fileSize: MAX_UPLOAD_BYTES
     }
   });
   let version = null;
+  let targetDeviceId = "";
   let uploadPath = null;
   let originalName = "video.mp4";
   let uploadDone = Promise.resolve();
@@ -924,6 +1079,9 @@ app.post("/api/publish", rateLimit("admin", ADMIN_RATE_LIMIT), requireAdmin, (re
   busboy.on("field", (name, value) => {
     if (name === "version") {
       version = Number(value);
+    }
+    if (name === "target_device_id") {
+      targetDeviceId = String(value || "").trim();
     }
   });
 
@@ -975,6 +1133,9 @@ app.post("/api/publish", rateLimit("admin", ADMIN_RATE_LIMIT), requireAdmin, (re
       if (!Number.isInteger(version) || version <= 0) {
         throw new Error("versao invalida");
       }
+      if (!safeDeviceId(targetDeviceId)) {
+        throw new Error("TV de destino invalida");
+      }
       if (!uploadPath || !fs.existsSync(uploadPath)) {
         throw new Error("arquivo nao recebido");
       }
@@ -983,25 +1144,27 @@ app.post("/api/publish", rateLimit("admin", ADMIN_RATE_LIMIT), requireAdmin, (re
         throw new Error("arquivo vazio");
       }
       const sha256 = await sha256File(uploadPath);
-      const storedName = `video-v${version}.mp4`;
+      const storedName = `${targetDeviceId}-v${version}-${Date.now()}.mp4`;
       const storedPath = path.join(UPLOADS_DIR, storedName);
       fs.renameSync(uploadPath, storedPath);
 
       const state = loadState();
-      state.manifest = {
+      state.manifests = manifestsByDevice(state);
+      state.manifests[targetDeviceId] = {
         version,
         filename: "video.mp4",
         original_filename: originalName,
         size,
         sha256,
         stored_name: storedName,
-        download_url: `/download/${version}`,
+        download_url: `/download/${targetDeviceId}/${version}`,
+        target_device_id: targetDeviceId,
         published_at: new Date().toISOString()
       };
-      addEvent(state, { event: "PUBLISHED", update_state: "UPDATE_AVAILABLE", version });
+      addEvent(state, { device_id: targetDeviceId, event: "PUBLISHED", update_state: "UPDATE_AVAILABLE", version });
       saveState(state);
       if (wantsJson) {
-        res.json({ ok: true, version, size });
+        res.json({ ok: true, device_id: targetDeviceId, version, size });
       } else {
         res.redirect("/?view=dashboard");
       }
