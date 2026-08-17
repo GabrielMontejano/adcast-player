@@ -44,6 +44,9 @@ const STORAGE_DIR = prepareStorageDir(REQUESTED_STORAGE_DIR);
 const DATA_DIR = path.join(STORAGE_DIR, "data");
 const UPLOADS_DIR = path.join(STORAGE_DIR, "uploads");
 const STATE_FILE = path.join(DATA_DIR, "state.json");
+const STORAGE_MODE_LABEL = STORAGE_DIR === REQUESTED_STORAGE_DIR
+  ? "persistente/local"
+  : "temporario";
 
 function initialState() {
   return {
@@ -275,7 +278,11 @@ function escapeHtml(value) {
 }
 
 function formatDate(value) {
-  return value ? new Date(value).toLocaleString("pt-BR") : "nenhum";
+  return value ? new Date(value).toLocaleString("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "medium",
+    timeZone: "America/Sao_Paulo"
+  }) : "nenhum";
 }
 
 function formatBytes(bytes) {
@@ -299,6 +306,41 @@ function isDeviceOnline(device) {
   return Date.now() - new Date(device.last_contact).getTime() < 90000;
 }
 
+function friendlyUpdateState(state) {
+  const labels = {
+    IDLE: "Tudo certo",
+    CHECKING: "Verificando servidor",
+    UPDATE_AVAILABLE: "Video novo encontrado",
+    DOWNLOADING: "Baixando video",
+    DOWNLOADED: "Download terminado",
+    VALIDATING: "Conferindo arquivo",
+    VALIDATED: "Arquivo aprovado",
+    READY_TO_INSTALL: "Pronto para trocar",
+    INSTALLING: "Trocando video",
+    PLAYER_RESTARTING: "Recarregando player",
+    WAITING_PLAYBACK: "Esperando tocar",
+    SUCCESS: "Rodando video novo",
+    ROLLBACK: "Voltando video anterior",
+    UPDATE_FAILED_ROLLED_BACK: "Falhou e voltou",
+    FAILED: "Falhou",
+    COMMAND_PENDING: "Comando pendente"
+  };
+  return labels[state] || state || "desconhecido";
+}
+
+function stateClass(state) {
+  if (["SUCCESS", "IDLE"].includes(state)) {
+    return "good";
+  }
+  if (["FAILED", "ROLLBACK", "UPDATE_FAILED_ROLLED_BACK"].includes(state)) {
+    return "danger";
+  }
+  if (["CHECKING", "UPDATE_AVAILABLE", "DOWNLOADING", "DOWNLOADED", "VALIDATING", "VALIDATED", "READY_TO_INSTALL", "INSTALLING", "WAITING_PLAYBACK", "PLAYER_RESTARTING"].includes(state)) {
+    return "warn";
+  }
+  return "neutral";
+}
+
 function html(state, requestedView = "dashboard") {
   const views = new Set(["dashboard", "devices", "publish", "server", "events"]);
   const activeView = views.has(requestedView) ? requestedView : "dashboard";
@@ -315,8 +357,9 @@ function html(state, requestedView = "dashboard") {
   const offlineCount = Math.max(devices.length - onlineCount, 0);
   const nextVersion = manifest ? manifest.version + 1 : 1;
   const latestHealthText = lastHealth
-    ? `${formatDate(lastHealth.time)} | playback=${lastHealth.playback ? "sim" : "nao"} | posicao=${lastHealth.position_ms || 0} ms | estado=${escapeHtml(lastHealth.update_state || "desconhecido")}`
+    ? `${formatDate(lastHealth.time)} | playback=${lastHealth.playback ? "sim" : "nao"} | posicao=${lastHealth.position_ms || 0} ms | estado=${escapeHtml(friendlyUpdateState(lastHealth.update_state))}`
     : "nenhuma";
+  const currentUpdateLabel = friendlyUpdateState(latestDevice.update_state);
   const deviceRows = devices.length
     ? devices.map(device => {
       const online = isDeviceOnline(device);
@@ -326,21 +369,25 @@ function html(state, requestedView = "dashboard") {
         <td>${escapeHtml(device.version ?? "0")}</td>
         <td>${device.playback ? "RODANDO" : "nao confirmado"}</td>
         <td>${escapeHtml(device.position_ms ?? 0)} ms</td>
-        <td>${escapeHtml(device.update_state || "desconhecido")}</td>
+        <td><span class="state-badge ${stateClass(device.update_state)}">${escapeHtml(friendlyUpdateState(device.update_state))}</span><small>${escapeHtml(device.update_state || "")}</small></td>
         <td>${formatDate(device.last_contact)}</td>
         <td>${escapeHtml(device.last_error || "nenhum")}</td>
       </tr>`;
     }).join("")
     : `<tr><td colspan="8" class="empty">Nenhuma TV conectou ainda.</td></tr>`;
-  const eventRows = (state.events || []).length
-    ? state.events.map(e => `<tr>
+  const eventRow = e => `<tr>
       <td>${formatDate(e.time)}</td>
       <td>${escapeHtml(e.device_id || "")}</td>
-      <td>${escapeHtml(e.update_state || "")}</td>
+      <td><span class="state-badge ${stateClass(e.update_state)}">${escapeHtml(friendlyUpdateState(e.update_state))}</span><small>${escapeHtml(e.update_state || "")}</small></td>
       <td>${escapeHtml(e.event || "")}</td>
       <td>${escapeHtml(e.version ?? "")}</td>
       <td>${escapeHtml(e.last_error || "")}</td>
-    </tr>`).join("")
+    </tr>`;
+  const eventRows = (state.events || []).length
+    ? state.events.map(eventRow).join("")
+    : `<tr><td colspan="6" class="empty">Nenhum evento registrado ainda.</td></tr>`;
+  const dashboardEventRows = (state.events || []).length
+    ? state.events.slice(0, 8).map(eventRow).join("")
     : `<tr><td colspan="6" class="empty">Nenhum evento registrado ainda.</td></tr>`;
   const navItem = (view, label) => `<a class="${activeView === view ? "active" : ""}" href="/?view=${view}">${label}</a>`;
   const pageMeta = {
@@ -368,7 +415,7 @@ function html(state, requestedView = "dashboard") {
             <dt>Versao instalada</dt><dd>${escapeHtml(latestDevice.version ?? "desconhecida")}</dd>
             <dt>Playback</dt><dd>${latestDevice.playback ? "RODANDO" : "nao confirmado"}</dd>
             <dt>Posicao</dt><dd>${escapeHtml(latestDevice.position_ms ?? 0)} ms</dd>
-            <dt>Estado update</dt><dd>${escapeHtml(latestDevice.update_state || "desconhecido")}</dd>
+            <dt>Estado update</dt><dd><span class="state-badge ${stateClass(latestDevice.update_state)}">${escapeHtml(friendlyUpdateState(latestDevice.update_state))}</span></dd>
             <dt>Ultimo erro</dt><dd>${escapeHtml(latestDevice.last_error || "nenhum")}</dd>
           </dl>
         </div>
@@ -378,8 +425,35 @@ function html(state, requestedView = "dashboard") {
             <dt>Pedido atual</dt><dd>${pendingCommand ? `aguardando resposta (${escapeHtml(pendingCommand.id)})` : "nenhum"}</dd>
             <dt>Ultima verificacao</dt><dd>${latestHealthText}</dd>
             <dt>Erros ativos</dt><dd>${errorCount}</dd>
+            <dt>Video publicado</dt><dd>${manifest ? `versao ${escapeHtml(manifest.version)} - ${formatBytes(manifest.size)}` : "nenhum"}</dd>
           </dl>
         </div>
+      </div>
+    </section>
+    <section class="status-strip">
+      <div>
+        <span>Status operacional</span>
+        <strong>${escapeHtml(currentUpdateLabel)}</strong>
+      </div>
+      <div>
+        <span>Proxima acao esperada</span>
+        <strong>${pendingCommand ? "Aguardar resposta da TV" : updatingCount ? "Aguardar a TV concluir" : "Nenhuma acao pendente"}</strong>
+      </div>
+      <div>
+        <span>Atualizacao automatica</span>
+        <strong>A cada 15 segundos</strong>
+      </div>
+    </section>
+    <section>
+      <div class="section-title-row">
+        <h3>Eventos recentes</h3>
+        <a class="text-link" href="/?view=events">Ver historico completo</a>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <tr><th>Hora</th><th>Dispositivo</th><th>Estado</th><th>Evento</th><th>Versao</th><th>Erro</th></tr>
+          ${dashboardEventRows}
+        </table>
       </div>
     </section>`;
   const devicesContent = `
@@ -395,12 +469,26 @@ function html(state, requestedView = "dashboard") {
   const publishContent = `
     <section>
       <h3>Publicar video</h3>
-      <form action="/api/publish" method="post" enctype="multipart/form-data">
+      <form id="publish-form" action="/api/publish" method="post" enctype="multipart/form-data">
         <label>Arquivo MP4</label>
-        <input name="video" type="file" accept="video/mp4" required>
+        <input id="video-file" name="video" type="file" accept="video/mp4" required>
         <label>Versao</label>
-        <input name="version" type="number" min="1" step="1" value="${nextVersion}" required>
-        <button type="submit">PUBLICAR ATUALIZACAO</button>
+        <input id="video-version" name="version" type="number" min="1" step="1" value="${nextVersion}" required>
+        <div class="upload-panel" id="upload-panel">
+          <div class="upload-meta">
+            <strong id="upload-title">Aguardando arquivo</strong>
+            <span id="upload-detail">Selecione um MP4 para publicar.</span>
+          </div>
+          <div class="progress"><div id="upload-bar"></div></div>
+          <ol class="upload-log" id="upload-log">
+            <li>Pronto para enviar um novo video.</li>
+          </ol>
+          <div class="upload-actions">
+            <button id="publish-button" type="submit">PUBLICAR ATUALIZACAO</button>
+            <button id="cancel-upload" class="secondary" type="button" disabled>CANCELAR ENVIO</button>
+            <a class="button-link" href="/?view=dashboard">ACOMPANHAR DASHBOARD</a>
+          </div>
+        </div>
       </form>
     </section>
     <section>
@@ -421,6 +509,7 @@ function html(state, requestedView = "dashboard") {
       <dl>
         <dt>Porta</dt><dd>${PORT}</dd>
         <dt>Storage</dt><dd>${escapeHtml(STORAGE_DIR)}</dd>
+        <dt>Tipo storage</dt><dd><span class="state-badge ${STORAGE_MODE_LABEL === "temporario" ? "warn" : "good"}">${STORAGE_MODE_LABEL}</span></dd>
         <dt>Modo internet</dt><dd>${escapeHtml(PUBLIC_BASE_URL ? PUBLIC_BASE_URL : "local/LAN")}</dd>
         <dt>Limite upload</dt><dd>${formatBytes(MAX_UPLOAD_BYTES)}</dd>
         <dt>Rate limit</dt><dd>admin=${ADMIN_RATE_LIMIT}/janela, device=${DEVICE_RATE_LIMIT}/janela, bloqueio=${Math.round(AUTH_WINDOW_MS / 60000)} min</dd>
@@ -453,57 +542,85 @@ function html(state, requestedView = "dashboard") {
   <title>AdCast Player</title>
   <style>
     :root {
-      --bg: #eef2f5;
-      --panel: #ffffff;
-      --ink: #14202b;
-      --muted: #647281;
-      --line: #d8e0e7;
-      --nav: #132633;
-      --accent: #1769aa;
-      --good: #087f3a;
-      --warn: #a56a00;
-      --danger: #b42318;
+      --bg: #101418;
+      --panel: #191f26;
+      --panel-soft: #202833;
+      --ink: #edf3f7;
+      --muted: #93a3b3;
+      --line: #303a46;
+      --nav: #151a21;
+      --accent: #2d8cff;
+      --accent-strong: #57c4ff;
+      --good: #35d07f;
+      --warn: #ffbd4a;
+      --danger: #ff6b5f;
+      --neutral: #9ca8b5;
     }
     * { box-sizing: border-box; }
-    body { margin: 0; font-family: Arial, sans-serif; background: var(--bg); color: var(--ink); }
+    body { margin: 0; font-family: Inter, Arial, sans-serif; background: var(--bg); color: var(--ink); }
     .shell { display: grid; grid-template-columns: 248px minmax(0, 1fr); min-height: 100vh; }
-    aside { position: sticky; top: 0; height: 100vh; padding: 22px 18px; background: var(--nav); color: white; }
-    aside h1 { font-size: 20px; margin: 0 0 4px; }
-    aside p { color: #b8c7d1; font-size: 13px; margin: 0 0 24px; }
-    nav a { display: block; color: #dce7ee; text-decoration: none; padding: 10px 12px; border-radius: 6px; margin-bottom: 6px; font-weight: 700; }
-    nav a:hover, nav a.active { background: rgba(255, 255, 255, 0.12); color: white; }
-    main { padding: 28px; max-width: 1320px; width: 100%; }
+    aside { position: sticky; top: 0; height: 100vh; padding: 22px 18px; background: var(--nav); color: white; border-right: 1px solid var(--line); }
+    aside h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: 0; }
+    aside p { color: var(--muted); font-size: 13px; margin: 0 0 24px; }
+    nav a { display: block; color: #c8d2dd; text-decoration: none; padding: 11px 12px; border-radius: 8px; margin-bottom: 6px; font-weight: 700; border: 1px solid transparent; }
+    nav a:hover, nav a.active { background: #24303d; color: white; border-color: #3a4654; }
+    nav a.active { box-shadow: inset 3px 0 0 var(--accent-strong); }
+    main { padding: 30px; max-width: 1380px; width: 100%; }
     header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
-    header h2 { font-size: 26px; margin: 0 0 4px; }
+    header h2 { font-size: 28px; margin: 0 0 4px; letter-spacing: 0; }
     header p { margin: 0; color: var(--muted); }
-    section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin-bottom: 16px; }
+    section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin-bottom: 16px; box-shadow: 0 14px 30px rgba(0, 0, 0, 0.18); }
     section h3 { font-size: 18px; margin: 0 0 14px; }
     label { display: block; font-weight: 700; margin: 12px 0 6px; }
     input, button { font: inherit; }
-    input[type="number"], input[type="file"] { width: 100%; padding: 10px; border: 1px solid #b8c3cc; border-radius: 6px; background: white; }
-    button { margin-top: 14px; padding: 10px 14px; border: 0; border-radius: 6px; background: var(--accent); color: white; font-weight: 700; cursor: pointer; }
+    input[type="number"], input[type="file"] { width: 100%; padding: 11px; border: 1px solid #3b4654; border-radius: 8px; background: #11161c; color: var(--ink); }
+    input[type="file"]::file-selector-button { margin-right: 10px; border: 0; border-radius: 6px; padding: 8px 10px; background: #2a3440; color: var(--ink); font-weight: 700; cursor: pointer; }
+    button, .button-link { margin-top: 14px; padding: 10px 14px; border: 0; border-radius: 8px; background: var(--accent); color: white; font-weight: 800; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; min-height: 42px; }
+    button:hover, .button-link:hover { filter: brightness(1.08); }
+    button:disabled { cursor: not-allowed; opacity: 0.65; }
+    button.secondary { background: #2a3440; color: #dbe6ee; }
     dl { display: grid; grid-template-columns: 150px 1fr; gap: 8px 14px; margin: 0; }
-    dt { font-weight: 700; color: #405261; }
+    dt { font-weight: 700; color: #c3ced8; }
     dd { margin: 0; word-break: break-word; }
     table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 10px 8px; border-bottom: 1px solid #e4e8ec; text-align: left; font-size: 14px; vertical-align: top; }
-    th { color: #435566; font-size: 12px; text-transform: uppercase; letter-spacing: 0; }
-    code { background: #edf2f6; padding: 2px 5px; border-radius: 4px; }
+    th, td { padding: 11px 8px; border-bottom: 1px solid var(--line); text-align: left; font-size: 14px; vertical-align: top; }
+    tr:hover td { background: rgba(255, 255, 255, 0.025); }
+    th { color: #aab8c6; font-size: 12px; text-transform: uppercase; letter-spacing: 0; }
+    td small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+    code { background: #11161c; border: 1px solid #2d3642; color: #b9ddff; padding: 2px 5px; border-radius: 4px; }
     .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
-    .metric { background: #f8fafb; border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+    .metric { background: var(--panel-soft); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
     .metric span { display: block; color: var(--muted); font-size: 13px; font-weight: 700; }
     .metric strong { display: block; font-size: 28px; margin-top: 6px; }
     .split { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(300px, 0.9fr); gap: 16px; }
     .pill { display: inline-block; min-width: 76px; text-align: center; padding: 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-    .good { color: var(--good); background: #e7f6ee; }
-    .warn { color: var(--warn); background: #fff3da; }
-    .danger { color: var(--danger); background: #fdebea; }
-    .neutral { color: #405261; background: #edf2f6; }
+    .good { color: var(--good); background: rgba(53, 208, 127, 0.12); }
+    .warn { color: var(--warn); background: rgba(255, 189, 74, 0.13); }
+    .danger { color: var(--danger); background: rgba(255, 107, 95, 0.13); }
+    .neutral { color: var(--neutral); background: rgba(156, 168, 181, 0.12); }
+    .state-badge { display: inline-block; padding: 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 800; }
     .empty { color: var(--muted); text-align: center; padding: 24px 8px; }
     .table-wrap { overflow-x: auto; }
     .server-list { display: flex; flex-wrap: wrap; gap: 6px; }
     .inline { display: inline; }
     .header-actions { min-width: 170px; text-align: right; }
+    .section-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .section-title-row h3 { margin: 0; }
+    .text-link { color: var(--accent-strong); text-decoration: none; font-weight: 800; }
+    .text-link:hover { text-decoration: underline; }
+    .status-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; background: #121820; }
+    .status-strip div { background: var(--panel-soft); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+    .status-strip span { display: block; color: var(--muted); font-size: 13px; font-weight: 700; margin-bottom: 6px; }
+    .status-strip strong { font-size: 16px; }
+    .upload-panel { margin-top: 14px; border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: var(--panel-soft); }
+    .upload-meta { display: flex; flex-direction: column; gap: 4px; color: var(--muted); }
+    .upload-meta strong { color: var(--ink); }
+    .progress { height: 12px; margin-top: 12px; overflow: hidden; border-radius: 999px; background: #10161d; border: 1px solid #2d3743; }
+    .progress div { width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-strong)); transition: width 0.2s ease; }
+    .upload-log { margin: 14px 0 0; padding: 12px 12px 12px 28px; min-height: 92px; max-height: 180px; overflow: auto; background: #11161c; border: 1px solid #2d3642; border-radius: 8px; color: #cfd9e3; }
+    .upload-log li { margin: 0 0 6px; }
+    .upload-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .state-label { font-weight: 700; }
     @media (max-width: 900px) {
       .shell { grid-template-columns: 1fr; }
       aside { position: static; height: auto; }
@@ -511,7 +628,7 @@ function html(state, requestedView = "dashboard") {
       nav a { margin: 0; }
       main { padding: 18px; }
       header { display: block; }
-      .grid, .split { grid-template-columns: 1fr; }
+      .grid, .split, .status-strip { grid-template-columns: 1fr; }
       dl { grid-template-columns: 1fr; }
     }
   </style>
@@ -542,6 +659,153 @@ function html(state, requestedView = "dashboard") {
     ${activeContent}
   </main>
 </div>
+<script>
+(() => {
+  const activeView = ${JSON.stringify(activeView)};
+  if (activeView === "dashboard" || activeView === "events" || activeView === "devices") {
+    setTimeout(() => window.location.reload(), 15000);
+  }
+
+  const form = document.getElementById("publish-form");
+  if (!form) return;
+
+  const fileInput = document.getElementById("video-file");
+  const versionInput = document.getElementById("video-version");
+  const publishButton = document.getElementById("publish-button");
+  const cancelButton = document.getElementById("cancel-upload");
+  const title = document.getElementById("upload-title");
+  const detail = document.getElementById("upload-detail");
+  const bar = document.getElementById("upload-bar");
+  const log = document.getElementById("upload-log");
+  let xhr = null;
+  let completedUploadLogged = false;
+
+  const addLog = (message) => {
+    const item = document.createElement("li");
+    item.textContent = new Date().toLocaleTimeString("pt-BR") + " - " + message;
+    log.prepend(item);
+  };
+
+  const setLocked = (locked) => {
+    publishButton.disabled = locked;
+    cancelButton.disabled = !locked;
+    fileInput.disabled = locked;
+    versionInput.disabled = locked;
+  };
+
+  const formatBytesClient = (bytes) => {
+    const units = ["B", "KB", "MB", "GB"];
+    let size = Number(bytes || 0);
+    let unit = 0;
+    while (size >= 1024 && unit < units.length - 1) {
+      size /= 1024;
+      unit += 1;
+    }
+    return size.toFixed(unit === 0 ? 0 : 1) + " " + units[unit];
+  };
+
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files && fileInput.files[0];
+    bar.style.width = "0%";
+    if (!file) {
+      title.textContent = "Aguardando arquivo";
+      detail.textContent = "Selecione um MP4 para publicar.";
+      return;
+    }
+    title.textContent = file.name;
+    detail.textContent = "Tamanho: " + formatBytesClient(file.size);
+    addLog("Arquivo selecionado: " + file.name + " (" + formatBytesClient(file.size) + ").");
+  });
+
+  cancelButton.addEventListener("click", () => {
+    if (xhr) {
+      xhr.abort();
+    }
+  });
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) {
+      title.textContent = "Selecione um arquivo MP4";
+      detail.textContent = "Nenhum arquivo foi escolhido.";
+      addLog("Publicacao bloqueada: nenhum arquivo selecionado.");
+      return;
+    }
+
+    const data = new FormData();
+    data.append("video", file);
+    data.append("version", versionInput.value);
+
+    xhr = new XMLHttpRequest();
+    completedUploadLogged = false;
+    setLocked(true);
+    title.textContent = "Enviando video...";
+    detail.textContent = "0% enviado de " + formatBytesClient(file.size);
+    bar.style.width = "0%";
+    addLog("Envio iniciado para a versao " + versionInput.value + ".");
+
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable) {
+        detail.textContent = "Enviando... tamanho total nao informado pelo navegador.";
+        return;
+      }
+      const percent = Math.min(100, Math.round((e.loaded / e.total) * 100));
+      bar.style.width = percent + "%";
+      detail.textContent = percent + "% enviado (" + formatBytesClient(e.loaded) + " de " + formatBytesClient(e.total) + ")";
+      if (percent === 100 && !completedUploadLogged) {
+        completedUploadLogged = true;
+        addLog("Upload chegou em 100%. Servidor esta conferindo o arquivo.");
+      }
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 400) {
+        title.textContent = "Upload concluido";
+        detail.textContent = "Video publicado. A TV vai baixar na proxima consulta.";
+        bar.style.width = "100%";
+        addLog("Servidor confirmou a publicacao. Indo para o dashboard.");
+        setTimeout(() => {
+          window.location.href = "/?view=dashboard";
+        }, 1800);
+        return;
+      }
+      title.textContent = "Falha ao publicar";
+      let errorMessage = xhr.responseText || ("HTTP " + xhr.status);
+      try {
+        errorMessage = JSON.parse(xhr.responseText).error || errorMessage;
+      } catch {
+        // resposta nao era JSON
+      }
+      detail.textContent = errorMessage;
+      addLog("Falha do servidor: " + detail.textContent);
+      setLocked(false);
+      xhr = null;
+    };
+
+    xhr.onerror = () => {
+      title.textContent = "Falha de rede";
+      detail.textContent = "O navegador nao conseguiu concluir o envio.";
+      addLog("Falha de rede durante o envio.");
+      setLocked(false);
+      xhr = null;
+    };
+
+    xhr.onabort = () => {
+      title.textContent = "Envio cancelado";
+      detail.textContent = "O upload foi interrompido antes da confirmacao.";
+      bar.style.width = "0%";
+      addLog("Envio cancelado pelo painel.");
+      setLocked(false);
+      xhr = null;
+    };
+
+    xhr.open("POST", "/api/publish");
+    xhr.setRequestHeader("X-Requested-With", "XMLHttpRequest");
+    xhr.send(data);
+  });
+})();
+</script>
 </body>
 </html>`;
 }
@@ -642,6 +906,7 @@ app.post("/api/health-check", rateLimit("admin", ADMIN_RATE_LIMIT), requireAdmin
 });
 
 app.post("/api/publish", rateLimit("admin", ADMIN_RATE_LIMIT), requireAdmin, (req, res) => {
+  const wantsJson = req.get("x-requested-with") === "XMLHttpRequest";
   const busboy = Busboy({
     headers: req.headers,
     limits: {
@@ -735,12 +1000,21 @@ app.post("/api/publish", rateLimit("admin", ADMIN_RATE_LIMIT), requireAdmin, (re
       };
       addEvent(state, { event: "PUBLISHED", update_state: "UPDATE_AVAILABLE", version });
       saveState(state);
-      res.redirect("/");
+      if (wantsJson) {
+        res.json({ ok: true, version, size });
+      } else {
+        res.redirect("/?view=dashboard");
+      }
     } catch (err) {
       if (uploadPath && fs.existsSync(uploadPath)) {
         fs.rmSync(uploadPath, { force: true });
       }
-      res.status(400).send(String(err.message || err));
+      const message = String(err.message || err);
+      if (wantsJson) {
+        res.status(400).json({ ok: false, error: message });
+      } else {
+        res.status(400).send(message);
+      }
     }
   });
 
