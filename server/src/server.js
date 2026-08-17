@@ -356,6 +356,16 @@ function manifestForDevice(state, deviceId) {
   return manifestsByDevice(state)[deviceId] || null;
 }
 
+function pendingCommandForDevice(state, deviceId) {
+  if (!state.command || state.command.completed_at) {
+    return null;
+  }
+  if (state.command.target_device_id && state.command.target_device_id !== deviceId) {
+    return null;
+  }
+  return state.command;
+}
+
 function html(state, query = {}) {
   const views = new Set(["dashboard", "devices", "publish", "server", "events"]);
   const requestedView = typeof query === "string" ? query : query.view;
@@ -514,6 +524,10 @@ function html(state, query = {}) {
               <dt>Publicado em</dt><dd>${manifestForDevice(state, selectedDeviceId) ? formatDate(manifestForDevice(state, selectedDeviceId).published_at) : "nenhum"}</dd>
             </dl>
             <div class="card-actions">
+              <form class="inline" action="/api/health-check" method="post">
+                <input type="hidden" name="device_id" value="${escapeHtml(selectedDeviceId)}">
+                <button type="submit">VERIFICAR ESTA TV</button>
+              </form>
               <a class="button-link" href="/?view=publish&device_id=${encodeURIComponent(selectedDeviceId)}">PUBLICAR PARA ESTA TV</a>
               <a class="button-link secondary-link" href="/?view=events&device_id=${encodeURIComponent(selectedDeviceId)}">VER LOG COMPLETO</a>
             </div>
@@ -740,9 +754,7 @@ function html(state, query = {}) {
         <h2>${pageMeta[activeView][0]}</h2>
         <p>${pageMeta[activeView][1]}</p>
       </div>
-      <div class="header-actions">
-        ${activeView === "dashboard" || activeView === "devices" ? `<form class="inline" action="/api/health-check" method="post"><button type="submit">VERIFICAR AGORA</button></form>` : ""}
-      </div>
+      <div class="header-actions"></div>
     </header>
     ${activeContent}
     <datalist id="known-devices">
@@ -925,6 +937,7 @@ app.disable("x-powered-by");
 app.set("trust proxy", 1);
 app.use(securityHeaders);
 app.use(express.json({ limit: MAX_JSON_BYTES }));
+app.use(express.urlencoded({ extended: false, limit: "16kb" }));
 app.use(blockSuspiciousRequest);
 
 app.get("/healthz", (req, res) => {
@@ -943,8 +956,9 @@ app.get("/manifest", rateLimit("device", DEVICE_RATE_LIMIT), requireDevice, (req
   const manifest = deviceManifest
     ? { ...deviceManifest, download_url: `${host}${withDeviceToken(`/download/${encodeURIComponent(deviceId)}/${deviceManifest.version}`)}` }
     : { version: 0 };
-  if (state.command && !state.command.completed_at) {
-    manifest.command = state.command;
+  const command = pendingCommandForDevice(state, deviceId);
+  if (command) {
+    manifest.command = command;
   }
   res.json(manifest);
 });
@@ -972,8 +986,9 @@ app.post("/heartbeat", rateLimit("device", DEVICE_RATE_LIMIT), requireDevice, (r
   };
   saveState(state);
   const response = { ok: true };
-  if (state.command && !state.command.completed_at) {
-    response.command = state.command;
+  const command = pendingCommandForDevice(state, deviceId);
+  if (command) {
+    response.command = command;
   }
   res.json(response);
 });
@@ -998,7 +1013,7 @@ app.post("/status", rateLimit("device", DEVICE_RATE_LIMIT), requireDevice, (req,
       update_state: body.update_state,
       last_error: body.last_error || null
     };
-    if (state.command && state.command.id === body.command_id) {
+    if (state.command && state.command.id === body.command_id && (!state.command.target_device_id || state.command.target_device_id === deviceId)) {
       state.command.completed_at = new Date().toISOString();
     }
   }
@@ -1008,14 +1023,20 @@ app.post("/status", rateLimit("device", DEVICE_RATE_LIMIT), requireDevice, (req,
 
 app.post("/api/health-check", rateLimit("admin", ADMIN_RATE_LIMIT), requireAdmin, (req, res) => {
   const state = loadState();
+  const deviceId = String(req.body.device_id || "").trim();
+  if (!safeDeviceId(deviceId)) {
+    res.status(400).send("device_id invalido");
+    return;
+  }
   state.command = {
     id: `health-${Date.now()}`,
     type: "HEALTH_CHECK",
+    target_device_id: deviceId,
     created_at: new Date().toISOString()
   };
-  addEvent(state, { event: "HEALTH_CHECK_REQUESTED", update_state: "COMMAND_PENDING" });
+  addEvent(state, { device_id: deviceId, event: "HEALTH_CHECK_REQUESTED", update_state: "COMMAND_PENDING" });
   saveState(state);
-  res.redirect("/");
+  res.redirect(`/?view=devices&device_id=${encodeURIComponent(deviceId)}`);
 });
 
 app.post("/api/publish", rateLimit("admin", ADMIN_RATE_LIMIT), requireAdmin, (req, res) => {
