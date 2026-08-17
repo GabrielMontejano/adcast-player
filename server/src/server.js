@@ -7,10 +7,7 @@ const express = require("express");
 
 const PORT = Number(process.env.PORT || 8080);
 const ROOT = path.resolve(__dirname, "..");
-const STORAGE_DIR = process.env.STORAGE_DIR || ROOT;
-const DATA_DIR = path.join(STORAGE_DIR, "data");
-const UPLOADS_DIR = path.join(STORAGE_DIR, "uploads");
-const STATE_FILE = path.join(DATA_DIR, "state.json");
+const REQUESTED_STORAGE_DIR = process.env.STORAGE_DIR || ROOT;
 const ADMIN_USER = process.env.ADMIN_USER || "admin";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 const DEVICE_TOKEN = process.env.DEVICE_TOKEN || "";
@@ -26,8 +23,27 @@ const MAX_JSON_BYTES = process.env.MAX_JSON_BYTES || "256kb";
 const authFailures = new Map();
 const rateBuckets = new Map();
 
-fs.mkdirSync(DATA_DIR, { recursive: true });
-fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+function prepareStorageDir(requestedDir) {
+  const candidates = [
+    requestedDir,
+    path.join(os.tmpdir(), "adcast-player")
+  ];
+  for (const candidate of candidates) {
+    try {
+      fs.mkdirSync(path.join(candidate, "data"), { recursive: true });
+      fs.mkdirSync(path.join(candidate, "uploads"), { recursive: true });
+      return candidate;
+    } catch (err) {
+      console.warn(`Storage not writable: ${candidate} (${err.code || err.message})`);
+    }
+  }
+  throw new Error("No writable storage directory available");
+}
+
+const STORAGE_DIR = prepareStorageDir(REQUESTED_STORAGE_DIR);
+const DATA_DIR = path.join(STORAGE_DIR, "data");
+const UPLOADS_DIR = path.join(STORAGE_DIR, "uploads");
+const STATE_FILE = path.join(DATA_DIR, "state.json");
 
 function initialState() {
   return {
