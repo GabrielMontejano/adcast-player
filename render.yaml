@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: adcast-player-backend
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: STORAGE_DIR
+        value: /var/data
+      - key: ADMIN_USER
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: DEVICE_TOKEN
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: MAX_UPLOAD_BYTES
+        value: "1073741824"
+      - key: AUTH_WINDOW_MS
+        value: "600000"
+      - key: ADMIN_MAX_AUTH_FAILURES
+        value: "10"
+      - key: DEVICE_MAX_AUTH_FAILURES
+        value: "30"
+      - key: ADMIN_RATE_LIMIT
+        value: "120"
+      - key: DEVICE_RATE_LIMIT
+        value: "600"
+    disk:
+      name: adcast-player-data
+      mountPath: /var/data
+      sizeGB: 10

@@ -1,0 +1,29 @@
+# Android app source is not part of the public/backend deploy repo.
+android/
+
+# Android build output and local machine config
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# Node dependencies
+server/node_modules/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Local server state and uploaded videos
+server/data/
+server/uploads/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.log
