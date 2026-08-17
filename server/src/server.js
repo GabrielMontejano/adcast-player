@@ -364,20 +364,12 @@ function html(state, query = {}) {
   const manifests = manifestsByDevice(state);
   const devices = Object.values(state.devices || {})
     .sort((a, b) => new Date(b.last_contact || 0) - new Date(a.last_contact || 0));
-  const latestDevice = devices[0] || {};
-  const lastHealth = latestDevice.last_health_check || null;
-  const pendingCommand = state.command && !state.command.completed_at ? state.command : null;
   const ips = localIps();
   const onlineCount = devices.filter(isDeviceOnline).length;
   const updatingCount = devices.filter(device => !["IDLE", "SUCCESS", "FAILED", undefined, null].includes(device.update_state)).length;
-  const errorCount = devices.filter(device => device.last_error || device.update_state === "FAILED").length;
   const offlineCount = Math.max(devices.length - onlineCount, 0);
   const selectedManifest = selectedDeviceId ? manifestForDevice(state, selectedDeviceId) : null;
   const nextVersion = selectedManifest ? selectedManifest.version + 1 : 1;
-  const latestHealthText = lastHealth
-    ? `${formatDate(lastHealth.time)} | playback=${lastHealth.playback ? "sim" : "nao"} | posicao=${lastHealth.position_ms || 0} ms | estado=${escapeHtml(friendlyUpdateState(lastHealth.update_state))}`
-    : "nenhuma";
-  const currentUpdateLabel = friendlyUpdateState(latestDevice.update_state);
   const filteredEvents = selectedDeviceId
     ? (state.events || []).filter(event => event.device_id === selectedDeviceId)
     : (state.events || []);
@@ -390,15 +382,14 @@ function html(state, query = {}) {
         <h3>${escapeHtml(deviceId)}</h3>
         <span class="pill ${online ? "good" : "danger"}">${online ? "ONLINE" : "OFFLINE"}</span>
       </div>
-      <dl>
-        <dt>Versao instalada</dt><dd>${escapeHtml(device.version ?? "0")}</dd>
-        <dt>Video destinado</dt><dd>${deviceManifest ? `versao ${escapeHtml(deviceManifest.version)} - ${formatBytes(deviceManifest.size)}` : "nenhum"}</dd>
-        <dt>Playback</dt><dd>${device.playback ? "RODANDO" : "nao confirmado"}</dd>
-        <dt>Posicao</dt><dd>${escapeHtml(device.position_ms ?? 0)} ms</dd>
-        <dt>Estado</dt><dd><span class="state-badge ${stateClass(device.update_state)}">${escapeHtml(friendlyUpdateState(device.update_state))}</span></dd>
-        <dt>Ultimo contato</dt><dd>${formatDate(device.last_contact)}</dd>
-        <dt>Ultimo erro</dt><dd>${escapeHtml(device.last_error || "nenhum")}</dd>
-      </dl>
+      <div class="device-compact">
+        <span><strong>Instalada</strong>${escapeHtml(device.version ?? "0")}</span>
+        <span><strong>Destino</strong>${deviceManifest ? `v${escapeHtml(deviceManifest.version)} - ${formatBytes(deviceManifest.size)}` : "nenhum"}</span>
+        <span><strong>Playback</strong>${device.playback ? "RODANDO" : "nao confirmado"}</span>
+        <span><strong>Estado</strong><em class="state-badge ${stateClass(device.update_state)}">${escapeHtml(friendlyUpdateState(device.update_state))}</em></span>
+        <span><strong>Contato</strong>${formatDate(device.last_contact)}</span>
+        <span><strong>Erro</strong>${escapeHtml(device.last_error || "nenhum")}</span>
+      </div>
       <div class="card-actions">
         <a class="text-link" href="/?view=devices&device_id=${encodeURIComponent(deviceId)}">Ver detalhes</a>
         <a class="text-link" href="/?view=publish&device_id=${encodeURIComponent(deviceId)}">Publicar video</a>
@@ -475,44 +466,6 @@ function html(state, query = {}) {
         <div class="metric"><span>Online</span><strong class="good">${onlineCount}</strong></div>
         <div class="metric"><span>Offline</span><strong class="${offlineCount ? "danger" : ""}">${offlineCount}</strong></div>
         <div class="metric"><span>Atualizando</span><strong class="${updatingCount ? "warn" : ""}">${updatingCount}</strong></div>
-      </div>
-      <div class="split">
-        <div>
-          <h3>TV mais recente</h3>
-          <dl>
-            <dt>Dispositivo</dt><dd>${escapeHtml(latestDevice.device_id || "nenhum")}</dd>
-            <dt>Status</dt><dd><span class="pill ${isDeviceOnline(latestDevice) ? "good" : "danger"}">${isDeviceOnline(latestDevice) ? "ONLINE" : "OFFLINE"}</span></dd>
-            <dt>Ultimo contato</dt><dd>${formatDate(latestDevice.last_contact)}</dd>
-            <dt>Versao instalada</dt><dd>${escapeHtml(latestDevice.version ?? "desconhecida")}</dd>
-            <dt>Playback</dt><dd>${latestDevice.playback ? "RODANDO" : "nao confirmado"}</dd>
-            <dt>Posicao</dt><dd>${escapeHtml(latestDevice.position_ms ?? 0)} ms</dd>
-            <dt>Estado update</dt><dd><span class="state-badge ${stateClass(latestDevice.update_state)}">${escapeHtml(friendlyUpdateState(latestDevice.update_state))}</span></dd>
-            <dt>Ultimo erro</dt><dd>${escapeHtml(latestDevice.last_error || "nenhum")}</dd>
-          </dl>
-        </div>
-        <div>
-          <h3>Verificacao remota</h3>
-          <dl>
-            <dt>Pedido atual</dt><dd>${pendingCommand ? `aguardando resposta (${escapeHtml(pendingCommand.id)})` : "nenhum"}</dd>
-            <dt>Ultima verificacao</dt><dd>${latestHealthText}</dd>
-            <dt>Erros ativos</dt><dd>${errorCount}</dd>
-            <dt>Video destinado</dt><dd>${latestDevice.device_id && manifestForDevice(state, latestDevice.device_id) ? `versao ${escapeHtml(manifestForDevice(state, latestDevice.device_id).version)} - ${formatBytes(manifestForDevice(state, latestDevice.device_id).size)}` : "nenhum"}</dd>
-          </dl>
-        </div>
-      </div>
-    </section>
-    <section class="status-strip">
-      <div>
-        <span>Status operacional</span>
-        <strong>${escapeHtml(currentUpdateLabel)}</strong>
-      </div>
-      <div>
-        <span>Proxima acao esperada</span>
-        <strong>${pendingCommand ? "Aguardar resposta da TV" : updatingCount ? "Aguardar a TV concluir" : "Nenhuma acao pendente"}</strong>
-      </div>
-      <div>
-        <span>Atualizacao automatica</span>
-        <strong>A cada 15 segundos</strong>
       </div>
     </section>
     <section>
@@ -732,11 +685,16 @@ function html(state, query = {}) {
     .status-strip div { background: var(--panel-soft); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
     .status-strip span { display: block; color: var(--muted); font-size: 13px; font-weight: 700; margin-bottom: 6px; }
     .status-strip strong { font-size: 16px; }
-    .device-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 14px; }
-    .device-card { background: var(--panel-soft); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
-    .device-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-    .device-card-head h3 { margin: 0; word-break: break-word; }
-    .card-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 14px; }
+    .device-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; }
+    .device-card { background: var(--panel-soft); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+    .device-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+    .device-card-head h3 { margin: 0; word-break: break-word; font-size: 16px; }
+    .device-compact { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px 14px; }
+    .device-compact span { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--ink); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .device-compact strong { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+    .device-compact span:nth-child(4) { overflow: visible; }
+    .device-compact .state-badge { padding: 2px 7px; font-style: normal; }
+    .card-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
     .secondary-link { background: #2a3440; color: #dbe6ee; }
     .filter-row { display: flex; gap: 10px; align-items: flex-end; margin-bottom: 14px; }
     .filter-row label { margin: 0 0 6px; }
@@ -758,6 +716,7 @@ function html(state, query = {}) {
       main { padding: 18px; }
       header { display: block; }
       .grid, .split, .status-strip { grid-template-columns: 1fr; }
+      .device-grid, .device-compact { grid-template-columns: 1fr; }
       dl { grid-template-columns: 1fr; }
     }
   </style>
