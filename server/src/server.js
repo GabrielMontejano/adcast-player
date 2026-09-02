@@ -12,13 +12,17 @@ const ADMIN_USER = process.env.ADMIN_USER || "admin";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 const DEVICE_TOKEN = process.env.DEVICE_TOKEN || "";
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "";
-const AUTH_WINDOW_MS = Number(process.env.AUTH_WINDOW_MS || 10 * 60 * 1000);
-const ADMIN_MAX_AUTH_FAILURES = Number(process.env.ADMIN_MAX_AUTH_FAILURES || 10);
+const AUTH_WINDOW_MS = Number(process.env.AUTH_WINDOW_MS || 30 * 60 * 1000);
+const ADMIN_MAX_AUTH_FAILURES = Number(process.env.ADMIN_MAX_AUTH_FAILURES || 5);
 const DEVICE_MAX_AUTH_FAILURES = Number(process.env.DEVICE_MAX_AUTH_FAILURES || 30);
 const ADMIN_RATE_LIMIT = Number(process.env.ADMIN_RATE_LIMIT || 120);
 const DEVICE_RATE_LIMIT = Number(process.env.DEVICE_RATE_LIMIT || 600);
 const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 1024 * 1024 * 1024);
 const MAX_JSON_BYTES = process.env.MAX_JSON_BYTES || "256kb";
+
+if (process.env.NODE_ENV === "production" && (!ADMIN_PASSWORD || !DEVICE_TOKEN)) {
+  throw new Error("ADMIN_PASSWORD and DEVICE_TOKEN must be configured in production");
+}
 
 const authFailures = new Map();
 const rateBuckets = new Map();
@@ -78,12 +82,21 @@ function publicBaseUrl(req) {
   return PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
 }
 
+function safeSecretEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left || ""));
+  const rightBuffer = Buffer.from(String(right || ""));
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
 function authorizedDevice(req) {
   if (!DEVICE_TOKEN) {
     return true;
   }
   const header = req.get("x-device-token") || "";
-  return header === DEVICE_TOKEN;
+  return safeSecretEqual(header, DEVICE_TOKEN);
 }
 
 function clientIp(req) {
@@ -124,6 +137,15 @@ function recordAuthFailure(kind, req) {
 
 function clearAuthFailure(kind, req) {
   authFailures.delete(failureKey(kind, req));
+}
+
+function sendTemporaryAuthBlock(res, message, json = false) {
+  res.set("Retry-After", String(Math.ceil(AUTH_WINDOW_MS / 1000)));
+  if (json) {
+    res.status(429).json({ error: message });
+    return;
+  }
+  res.status(429).send(message);
 }
 
 function securityHeaders(req, res, next) {
@@ -199,7 +221,7 @@ function blockSuspiciousRequest(req, res, next) {
 
 function requireDevice(req, res, next) {
   if (isBlocked("device", req, DEVICE_MAX_AUTH_FAILURES)) {
-    res.status(429).json({ error: "too_many_device_auth_failures" });
+    sendTemporaryAuthBlock(res, "too_many_device_auth_failures", true);
     return;
   }
   if (!authorizedDevice(req)) {
@@ -217,7 +239,7 @@ function requireAdmin(req, res, next) {
     return;
   }
   if (isBlocked("admin", req, ADMIN_MAX_AUTH_FAILURES)) {
-    res.status(429).send("too many auth failures");
+    sendTemporaryAuthBlock(res, "too many auth failures");
     return;
   }
   const auth = req.get("authorization") || "";
@@ -231,7 +253,7 @@ function requireAdmin(req, res, next) {
   const idx = raw.indexOf(":");
   const user = idx >= 0 ? raw.slice(0, idx) : "";
   const pass = idx >= 0 ? raw.slice(idx + 1) : "";
-  if (user !== ADMIN_USER || pass !== ADMIN_PASSWORD) {
+  if (!safeSecretEqual(user, ADMIN_USER) || !safeSecretEqual(pass, ADMIN_PASSWORD)) {
     recordAuthFailure("admin", req);
     res.set("WWW-Authenticate", "Basic realm=\"AdCast Player\"");
     res.status(401).send("auth required");
@@ -266,6 +288,28 @@ function sha256File(filePath) {
     stream.on("error", reject);
     stream.on("end", () => resolve(hash.digest("hex")));
   });
+}
+
+function assertLikelyMp4(filePath) {
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const header = Buffer.alloc(12);
+    const bytesRead = fs.readSync(fd, header, 0, header.length, 0);
+    if (bytesRead < 12 || header.toString("ascii", 4, 8) !== "ftyp") {
+      throw new Error("arquivo nao parece ser um MP4 valido");
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function uploadPathForStoredName(storedName) {
+  const resolved = path.resolve(UPLOADS_DIR, String(storedName || ""));
+  const root = path.resolve(UPLOADS_DIR);
+  if (resolved !== root && resolved.startsWith(`${root}${path.sep}`)) {
+    return resolved;
+  }
+  throw new Error("stored_name invalido");
 }
 
 function escapeHtml(value) {
@@ -1062,7 +1106,7 @@ app.get("/download/:deviceId/:version", rateLimit("device", DEVICE_RATE_LIMIT), 
     res.status(404).send("version not found");
     return;
   }
-  const filePath = path.join(UPLOADS_DIR, manifest.stored_name);
+  const filePath = uploadPathForStoredName(manifest.stored_name);
   res.download(filePath, manifest.filename);
 });
 
@@ -1070,6 +1114,10 @@ app.post("/heartbeat", rateLimit("device", DEVICE_RATE_LIMIT), requireDevice, (r
   const state = loadState();
   const body = req.body || {};
   const deviceId = body.device_id || "unknown";
+  if (!safeDeviceId(deviceId)) {
+    res.status(400).json({ error: "device_id invalido" });
+    return;
+  }
   state.devices[deviceId] = {
     ...(state.devices[deviceId] || {}),
     ...body,
@@ -1088,6 +1136,10 @@ app.post("/status", rateLimit("device", DEVICE_RATE_LIMIT), requireDevice, (req,
   const state = loadState();
   const body = req.body || {};
   const deviceId = body.device_id || "unknown";
+  if (!safeDeviceId(deviceId)) {
+    res.status(400).json({ error: "device_id invalido" });
+    return;
+  }
   state.devices[deviceId] = {
     ...(state.devices[deviceId] || {}),
     ...body,
@@ -1214,6 +1266,7 @@ app.post("/api/publish", rateLimit("admin", ADMIN_RATE_LIMIT), requireAdmin, (re
       if (size <= 0) {
         throw new Error("arquivo vazio");
       }
+      assertLikelyMp4(uploadPath);
       const state = loadState();
       state.manifests = manifestsByDevice(state);
       const suggestedVersion = nextVersionForDevice(state, targetDeviceId);

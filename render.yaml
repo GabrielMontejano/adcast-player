@@ -22,9 +22,9 @@ services:
       - key: MAX_UPLOAD_BYTES
         value: "1073741824"
       - key: AUTH_WINDOW_MS
-        value: "600000"
+        value: "1800000"
       - key: ADMIN_MAX_AUTH_FAILURES
-        value: "10"
+        value: "5"
       - key: DEVICE_MAX_AUTH_FAILURES
         value: "30"
       - key: ADMIN_RATE_LIMIT
