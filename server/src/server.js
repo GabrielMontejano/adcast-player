@@ -356,6 +356,20 @@ function manifestForDevice(state, deviceId) {
   return manifestsByDevice(state)[deviceId] || null;
 }
 
+function versionNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.trunc(number) : 0;
+}
+
+function nextVersionForDevice(state, deviceId) {
+  const device = (state.devices || {})[deviceId] || null;
+  const manifest = manifestForDevice(state, deviceId);
+  return Math.max(
+    versionNumber(device && device.version),
+    versionNumber(manifest && manifest.version)
+  ) + 1;
+}
+
 function pendingCommandForDevice(state, deviceId) {
   if (!state.command || state.command.completed_at) {
     return null;
@@ -378,8 +392,9 @@ function html(state, query = {}) {
   const onlineCount = devices.filter(isDeviceOnline).length;
   const updatingCount = devices.filter(device => !["IDLE", "SUCCESS", "FAILED", undefined, null].includes(device.update_state)).length;
   const offlineCount = Math.max(devices.length - onlineCount, 0);
+  const selectedDevice = selectedDeviceId ? (state.devices || {})[selectedDeviceId] : null;
   const selectedManifest = selectedDeviceId ? manifestForDevice(state, selectedDeviceId) : null;
-  const nextVersion = selectedManifest ? selectedManifest.version + 1 : 1;
+  const nextVersion = selectedDeviceId ? nextVersionForDevice(state, selectedDeviceId) : 1;
   const filteredEvents = selectedDeviceId
     ? (state.events || []).filter(event => event.device_id === selectedDeviceId)
     : (state.events || []);
@@ -445,7 +460,6 @@ function html(state, query = {}) {
     server: ["Servidor", "Configuracoes operacionais e videos publicados."],
     events: ["Eventos", "Historico recente recebido dos dispositivos."]
   };
-  const selectedDevice = selectedDeviceId ? (state.devices || {})[selectedDeviceId] : null;
   const selectedDeviceEvents = selectedDeviceId
     ? (state.events || []).filter(event => event.device_id === selectedDeviceId).slice(0, 20)
     : [];
@@ -455,9 +469,32 @@ function html(state, query = {}) {
   const deviceDatalist = devices.map(device => `<option value="${escapeHtml(device.device_id || "")}"></option>`).join("");
   const nextVersionByDevice = Object.fromEntries(devices.map(device => {
     const deviceId = device.device_id || "";
-    const item = manifestForDevice(state, deviceId);
-    return [deviceId, item ? item.version + 1 : Math.max(Number(device.version || 0) + 1, 1)];
+    return [deviceId, nextVersionForDevice(state, deviceId)];
   }));
+  const publishDeviceInfoByDevice = Object.fromEntries(devices.map(device => {
+    const deviceId = device.device_id || "";
+    const item = manifestForDevice(state, deviceId);
+    return [deviceId, {
+      installedVersion: String(device.version ?? "0"),
+      publishedVersion: item ? String(item.version) : "nenhum",
+      lastContact: formatDate(device.last_contact),
+      playback: device.playback ? "RODANDO" : "nao confirmado",
+      statusText: friendlyUpdateState(device.update_state),
+      statusClass: stateClass(device.update_state),
+      nextVersion: nextVersionForDevice(state, deviceId)
+    }];
+  }));
+  const selectedPublishInfo = selectedDeviceId
+    ? (publishDeviceInfoByDevice[selectedDeviceId] || {
+      installedVersion: selectedDevice ? String(selectedDevice.version ?? "0") : "desconhecida",
+      publishedVersion: selectedManifest ? String(selectedManifest.version) : "nenhum",
+      lastContact: selectedDevice ? formatDate(selectedDevice.last_contact) : "nenhum",
+      playback: selectedDevice && selectedDevice.playback ? "RODANDO" : "nao confirmado",
+      statusText: selectedDevice ? friendlyUpdateState(selectedDevice.update_state) : "desconhecido",
+      statusClass: selectedDevice ? stateClass(selectedDevice.update_state) : "neutral",
+      nextVersion
+    })
+    : null;
   const manifestRows = Object.keys(manifests).length
     ? Object.entries(manifests)
       .sort(([a], [b]) => a.localeCompare(b))
@@ -549,6 +586,18 @@ function html(state, query = {}) {
       <form id="publish-form" action="/api/publish" method="post" enctype="multipart/form-data">
         <label>TV de destino</label>
         <input id="target-device" name="target_device_id" list="known-devices" value="${escapeHtml(selectedDeviceId)}" placeholder="ex: loterica_tv_propaganda" required>
+        <div class="publish-device-summary" id="publish-device-summary">
+          ${selectedPublishInfo ? `
+            <div><span>Versao instalada</span><strong data-device-info="installedVersion">${escapeHtml(selectedPublishInfo.installedVersion)}</strong></div>
+            <div><span>Versao destinada</span><strong data-device-info="publishedVersion">${escapeHtml(selectedPublishInfo.publishedVersion)}</strong></div>
+            <div><span>Ultimo contato</span><strong data-device-info="lastContact">${selectedPublishInfo.lastContact}</strong></div>
+            <div><span>Playback</span><strong data-device-info="playback">${escapeHtml(selectedPublishInfo.playback)}</strong></div>
+            <div><span>Status</span><strong><em data-device-info="statusText" class="state-badge ${selectedPublishInfo.statusClass}">${escapeHtml(selectedPublishInfo.statusText)}</em></strong></div>
+            <div><span>Proxima versao</span><strong data-device-info="nextVersion">${escapeHtml(selectedPublishInfo.nextVersion)}</strong></div>
+          ` : `
+            <div class="publish-device-empty">Selecione uma TV cadastrada para ver versoes, contato, playback e proxima versao sugerida.</div>
+          `}
+        </div>
         <label>Arquivo MP4</label>
         <input id="video-file" name="video" type="file" accept="video/mp4" required>
         <label>Versao</label>
@@ -721,6 +770,11 @@ function html(state, query = {}) {
     .upload-log { margin: 14px 0 0; padding: 12px 12px 12px 28px; min-height: 92px; max-height: 180px; overflow: auto; background: #11161c; border: 1px solid #2d3642; border-radius: 8px; color: #cfd9e3; }
     .upload-log li { margin: 0 0 6px; }
     .upload-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .publish-device-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 10px 0 14px; }
+    .publish-device-summary div { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); }
+    .publish-device-summary span { display: block; margin-bottom: 5px; color: var(--muted); font-size: 12px; font-weight: 800; text-transform: uppercase; }
+    .publish-device-summary strong { display: block; min-height: 22px; color: var(--ink); overflow-wrap: anywhere; }
+    .publish-device-summary .publish-device-empty { grid-column: 1 / -1; color: var(--muted); font-weight: 700; }
     .state-label { font-weight: 700; }
     @media (max-width: 900px) {
       .shell { grid-template-columns: 1fr; }
@@ -729,7 +783,7 @@ function html(state, query = {}) {
       nav a { margin: 0; }
       main { padding: 18px; }
       header { display: block; }
-      .grid, .split, .status-strip { grid-template-columns: 1fr; }
+      .grid, .split, .status-strip, .publish-device-summary { grid-template-columns: 1fr; }
       .device-grid, .device-compact { grid-template-columns: 1fr; }
       dl { grid-template-columns: 1fr; }
     }
@@ -773,9 +827,11 @@ function html(state, query = {}) {
   if (!form) return;
 
   const nextVersionByDevice = ${JSON.stringify(nextVersionByDevice)};
+  const publishDeviceInfoByDevice = ${JSON.stringify(publishDeviceInfoByDevice)};
   const targetDeviceInput = document.getElementById("target-device");
   const fileInput = document.getElementById("video-file");
   const versionInput = document.getElementById("video-version");
+  const publishSummary = document.getElementById("publish-device-summary");
   const publishButton = document.getElementById("publish-button");
   const cancelButton = document.getElementById("cancel-upload");
   const title = document.getElementById("upload-title");
@@ -810,13 +866,48 @@ function html(state, query = {}) {
     return size.toFixed(unit === 0 ? 0 : 1) + " " + units[unit];
   };
 
-  targetDeviceInput.addEventListener("change", () => {
+  const setSummaryValue = (name, value) => {
+    const element = publishSummary && publishSummary.querySelector('[data-device-info="' + name + '"]');
+    if (element) {
+      element.textContent = value;
+    }
+  };
+
+  const renderKnownDeviceSummary = (info) => {
+    if (!publishSummary || !info) return;
+    if (publishSummary.querySelector(".publish-device-empty")) {
+      publishSummary.innerHTML =
+        '<div><span>Versao instalada</span><strong data-device-info="installedVersion"></strong></div>' +
+        '<div><span>Versao destinada</span><strong data-device-info="publishedVersion"></strong></div>' +
+        '<div><span>Ultimo contato</span><strong data-device-info="lastContact"></strong></div>' +
+        '<div><span>Playback</span><strong data-device-info="playback"></strong></div>' +
+        '<div><span>Status</span><strong><em data-device-info="statusText" class="state-badge"></em></strong></div>' +
+        '<div><span>Proxima versao</span><strong data-device-info="nextVersion"></strong></div>';
+    }
+    setSummaryValue("installedVersion", info.installedVersion);
+    setSummaryValue("publishedVersion", info.publishedVersion);
+    setSummaryValue("lastContact", info.lastContact);
+    setSummaryValue("playback", info.playback);
+    setSummaryValue("statusText", info.statusText);
+    setSummaryValue("nextVersion", info.nextVersion);
+    const status = publishSummary.querySelector('[data-device-info="statusText"]');
+    if (status) {
+      status.className = "state-badge " + info.statusClass;
+    }
+  };
+
+  const updateTargetDevice = () => {
     const target = targetDeviceInput.value.trim();
-    if (nextVersionByDevice[target]) {
+    const info = publishDeviceInfoByDevice[target];
+    if (info) {
+      renderKnownDeviceSummary(info);
       versionInput.value = nextVersionByDevice[target];
       addLog("Destino selecionado: " + target + ". Proxima versao sugerida: " + versionInput.value + ".");
     }
-  });
+  };
+
+  targetDeviceInput.addEventListener("change", updateTargetDevice);
+  targetDeviceInput.addEventListener("input", updateTargetDevice);
 
   fileInput.addEventListener("change", () => {
     const file = fileInput.files && fileInput.files[0];
@@ -1123,13 +1214,17 @@ app.post("/api/publish", rateLimit("admin", ADMIN_RATE_LIMIT), requireAdmin, (re
       if (size <= 0) {
         throw new Error("arquivo vazio");
       }
+      const state = loadState();
+      state.manifests = manifestsByDevice(state);
+      const suggestedVersion = nextVersionForDevice(state, targetDeviceId);
+      if (version < suggestedVersion) {
+        version = suggestedVersion;
+      }
       const sha256 = await sha256File(uploadPath);
       const storedName = `${targetDeviceId}-v${version}-${Date.now()}.mp4`;
       const storedPath = path.join(UPLOADS_DIR, storedName);
       fs.renameSync(uploadPath, storedPath);
 
-      const state = loadState();
-      state.manifests = manifestsByDevice(state);
       state.manifests[targetDeviceId] = {
         version,
         filename: "video.mp4",
