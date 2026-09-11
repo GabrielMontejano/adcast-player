@@ -244,7 +244,6 @@ function requireAdmin(req, res, next) {
   }
   const auth = req.get("authorization") || "";
   if (!auth.startsWith("Basic ")) {
-    recordAuthFailure("admin", req);
     res.set("WWW-Authenticate", "Basic realm=\"AdCast Player\"");
     res.status(401).send("auth required");
     return;
